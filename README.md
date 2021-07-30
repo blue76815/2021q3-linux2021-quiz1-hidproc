@@ -250,11 +250,15 @@ unregister_ftrace_function(&ops);//關閉tracing call
 #### [Using ftrace to hook to functions](https://www.kernel.org/doc/html/latest/trace/ftrace-uses.html?highlight=ftrace_set_filter_ip#)
 > To **enable tracing call:**
 > `register_ftrace_function(&ops);`
+> 
 > To **disable tracing call:**
 > `unregister_ftrace_function(&ops);`
 > The above is defined by including the header:
 > `#include <linux/ftrace.h>`
-> Sometimes more than one function has the same name. **To trace just a specific function in this case**, `ftrace_set_filter_ip()` can be used.
+> Sometimes more than one function has the same name. 
+> 
+> **To trace just a specific function in this case**, `ftrace_set_filter_ip()` can be used.
+> 
 > `ret = ftrace_set_filter_ip(&ops, ip, 0, 0);`
 
 本測驗在
@@ -283,11 +287,11 @@ static const struct file_operations fops = {
 詳細說明參照
 [3.3.3.1. file_operations結構體](http://doc.embedfire.com/linux/imx6/base/zh/latest/linux_driver/character_device.html#file-operations)
 > ## 3.3.3.1. file_operations結構體
-> <span class="red">**file_operation**</span>就是把<span class="blue">**系統調用(system call)**</span> 和<span class="red">**驅動(Device)程序**</span>關聯起來的<span class="red">**關鍵數據結構**</span>。
+> <span class="red">**file_operation**</span> 就是把<span class="blue">**系統調用 (system call)**</span> 和<span class="red">**驅動 (Device)程序**</span>關聯起來的<span class="red">**關鍵數據結構**</span>。
 > 
-> 這個結構的<span class="blue">**每一個成員**</span>都<span class="blue">**對應著一個系統調用(system call)**</span>。
+> 這個結構的<span class="blue">**每一個成員**</span>都<span class="blue">**對應著一個系統調用 (system call)**</span>。
 > 
-> <span class="blue">**讀取 file_operation**</span>中相應的<span class="blue">**函數指標**</span>，接著<span class="blue">**把控制權轉交給函數指標指向的函數**</span>，從而完成了Linux設備驅動程序的工作。
+> <span class="blue">**讀取 file_operation**</span> 中相應的<span class="blue">**函數指標**</span>，接著<span class="blue">**把控制權轉交給函數指標指向的函數**</span>，從而完成了 Linux 設備驅動程序的工作。
 ```clike=2022
 struct file_operations {
 	struct module *owner;
@@ -382,7 +386,7 @@ PS.在 **The Linux Kernel Module Programming Guide**
 > };
 > ```
 
-書中提到的這個 `struct proc_ops` 定義，<span class="red">**在kernel v5.13.6 已經移到 [include/linux/proc_fs.h](https://elixir.bootlin.com/linux/latest/source/include/linux/proc_fs.h#L29)**</span>
+書中提到的這個 `struct proc_ops` 定義，<span class="red">**在 kernel v5.13.6 已經移到 [include/linux/proc_fs.h](https://elixir.bootlin.com/linux/latest/source/include/linux/proc_fs.h#L29)**</span>
 
 ---
 ### 1.7 `is_hidden_proc()`,`hide_process()`,`unhide_process()`從何處被呼叫
@@ -472,7 +476,107 @@ step2.`hook_find_ge_pid()`內才調用到 <span class="blue">`is_hidden_proc(pid
 
 ---
 
-## 3.本核心模組只能隱藏單一 PID，請擴充為允許其 PPID 也跟著隱藏，或允許給定一組 PID 列表，而非僅有單一 PID
+## 3 本核心模組只能隱藏單一 PID，請擴充為允許其 PPID 也跟著隱藏，或允許給定一組 PID 列表，而非僅有單一 PID
+
+### 3.1 實做允許給定一組 PID 列表，作隱藏一組 PID
+使用 [strsep](https://xiwan.io/archive/string-split-strtok-strtok-r-strsep.html) 搜尋字串" "位置，
+這樣輸入 $ echo "add 644 655" 就能用空格分割出數字，再將取到的"字串數字"，**用 [kstrtol()](https://www.kernel.org/doc/htmldocs/kernel-api/API-kstrtol.html) 轉成10進位常數**
+才能輸入給 hide_process(pid);
+
+```c=
+//使用 strsep 搜尋字串" "位置
+// https://xiwan.io/archive/string-split-strtok-strtok-r-strsep.html
+static ssize_t device_write(struct file *filep,
+                            const char *buffer,
+                            size_t len,
+                            loff_t *offset)
+{
+    long pid;
+    char *message;
+    char *ch_index; 
+    char add_message[] = "add", del_message[] = "del",space_message[]=" ";
+    if (len < sizeof(add_message) - 1 && len < sizeof(del_message) - 1)
+        return -EAGAIN;
+
+    message = kmalloc(len + 1, GFP_KERNEL);//GFP_KERNEL說明請看 https://blog.xuite.net/kerkerker2013/wretch/113322033
+    memset(message, 0, len + 1);
+    copy_from_user(message, buffer, len);//buffer取出資料，放到message，而buffer 來自輸入變數 const char *buffer
+    if (!memcmp(message, add_message, sizeof(add_message) - 1)) {//比較字串是否為 "add"
+        ch_index = strsep(&message, space_message);//跳過"add"
+		while((ch_index = strsep(&message, space_message))){
+			kstrtol(ch_index, 10, &pid);//kstrtol()為將字串轉成 long 整數，解析字串從第 ch_index 格 位置開始，其中10代表轉成10進位   https://www.kernel.org/doc/htmldocs/kernel-api/API-kstrtol.html
+			hide_process(pid);//作業問的內容 將取到的數字 隱藏此PID數字					
+		}
+
+    } else if (!memcmp(message, del_message, sizeof(del_message) - 1)) {//比較字串是否為 "del"
+        ch_index = strsep(&message, space_message);//跳過"del"
+		while((ch_index = strsep(&message, space_message))){
+			kstrtol(ch_index, 10, &pid);//kstrtol()為將字串轉成 long 整數，解析字串從第 ch_index 格 位置開始
+			unhide_process(pid);//作業問的內容 將取到的數字 回復顯示此PID數字
+		}
+		
+    } else {
+        kfree(message);
+        return -EAGAIN;
+    }
+    *offset = len;
+    kfree(message);
+    return len;
+}
+```
+
+
+### 3.2 實驗結果
+設計一個fork()程式，能產生兩個行程
+```c
+#include <stdio.h>
+#include <unistd.h>
+
+int main()
+{
+    fork();
+    //fork();
+    printf("Hello world! ");
+    printf("pid=%d\r\n",getpid());
+    while(1); //永久卡住 只能用ctrl+c 才能退出行程  
+
+    return 0;
+}
+```
+
+```
+$ ./main
+Hello world! pid=39494
+Hello world! pid=39495
+```
+
+![](https://i.imgur.com/pjJ2RWi.png)
+開另一個終端機 掛載 hidproc 模組測試 hidpid功能
+
+```
+$ sudo insmod hideproc.ko 
+$ pidof ./main
+39495 39494
+$ echo "add 39495 39494" | sudo tee /dev/hideproc
+$ echo "del 39495 39494" | sudo tee /dev/hideproc
+del 39495 39494
+```
+另一邊終端機輸入 `ps -aux | grep ./main`
+檢查行程
+
+```
+blue76185@blue76815-tuf-gaming-fx504ge-fx80ge:~$ ps -aux | grep ./main 
+blue761+   39494 99.9  0.0   2488   520 pts/1    R+   19:08  17:16 ./main
+blue761+   39495 99.9  0.0   2488    80 pts/1    R+   19:08  17:16 ./main
+blue761+   42569  0.0  0.0   9388   728 pts/0    S+   19:26   0:00 grep --color=auto ./main
+blue76185@blue76815-tuf-gaming-fx504ge-fx80ge:~$ ps -aux | grep ./main //執行hidpid後
+blue761+   42579  0.0  0.0   9388  2448 pts/0    S+   19:26   0:00 grep --color=auto ./main
+blue76185@blue76815-tuf-gaming-fx504ge-fx80ge:~$ ps -aux | grep ./main  //解除hidpid後
+blue761+   39494  100  0.0   2488   520 pts/1    R+   19:08  17:52 ./main
+blue761+   39495  100  0.0   2488    80 pts/1    R+   19:08  17:52 ./main
+blue761+   42591  0.0  0.0   9388  2564 pts/0    S+   19:26   0:00 grep --color=auto ./main
+```
+![](https://i.imgur.com/waTrDky.png)
 
 ---
 
@@ -573,7 +677,7 @@ step2.`hook_find_ge_pid()`內才調用到 <span class="blue">`is_hidden_proc(pid
 若沒註銷設備 沒釋放設備號
 是否有影響
 可用
-`cat /proc/devices` 查詢kernel分配的設備號碼。
+`cat /proc/devices` 查詢 kernel 分配的設備號碼。
 
 ### 4.1 修改 `static void _hideproc_exit(void)`
 加入
